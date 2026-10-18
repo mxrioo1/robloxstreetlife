@@ -1,11 +1,11 @@
--- ratman4080 silent aim v9 | dissimulated polished edition
--- based on Phemonaz open-source hook, refactored for XENO
--- F8 GUI | team check | real slider | random jitter | kill script
+-- ratman4080 silent aim v10 | Universal Stealth Edition
+-- Universal Raycast Hook | Right Click + Shoot to Trigger
+-- Bigger UI | Kill Script | Working Drag Slider
 
 print("sit activated")
 
 -- ============================================================
--- 服务与引用
+-- Services & Modules
 -- ============================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,10 +16,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
 
--- ============================================================
--- 依赖模块 (安全 pcall 获取)
--- ============================================================
 local function safeRequire(parent, name)
     local obj = parent:FindFirstChild(name, true)
     if obj then
@@ -31,51 +29,48 @@ end
 
 local neuron = safeRequire(ReplicatedFirst, "neuron")
 local States = safeRequire(ReplicatedStorage, "States")
-local Effects = safeRequire(ReplicatedStorage, "Effects")
 
 -- ============================================================
--- 配置
+-- Settings
 -- ============================================================
 local Settings = {
     Enabled = false,
-    Strength = 1.0, -- 1.0 = 完全锁定, 0.0 = 原始瞄准
-    FOV = 160,      -- 隐蔽性：只锁定准星附近的敌人
-    Jitter = 0.3,   -- 隐蔽性：在头部周围随机散布的半径 (Studs)
+    Strength = 1.0,
+    FOV = 200,
+    Jitter = 0.1,
 }
 
-local isDead = false
 local targetPos = nil
+local targetPart = nil
+local isDead = false
 
 -- ============================================================
--- 团队检查
+-- Target Acquisition
 -- ============================================================
 local function isSameTeam(player)
     if not player.Team or not LocalPlayer.Team then return false end
     return player.Team == LocalPlayer.Team
 end
 
--- ============================================================
--- 目标获取 (加入 FOV 限制，防视觉穿帮)
--- ============================================================
 local function updateTarget()
-    if isDead or not Camera or not neuron or not States then return end
+    if isDead or not Camera then return end
     
-    local entitiesFolder = Workspace:FindFirstChild("Entities", true)
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local bestDist = math.huge
     targetPos = nil
+    targetPart = nil
 
-    -- 遍历玩家
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
         if isSameTeam(player) then continue end
 
-        local char = neuron:get_character(player)
+        local char = player.Character
         if not char then continue end
-        if States:GetStateValue(char, "Dead", false) then continue end
-
-        local head = char:FindFirstChild("HitboxHead")
-        if not head then continue end
+        
+        local head = char:FindFirstChild("HitboxHead") or char:FindFirstChild("Head")
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        
+        if not head or not humanoid or humanoid.Health <= 0 then continue end
 
         local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
         if not onScreen then continue end
@@ -84,41 +79,30 @@ local function updateTarget()
         if dist < bestDist and dist < Settings.FOV then
             bestDist = dist
             targetPos = head.Position
-        end
-    end
-
-    -- 遍历 NPC/实体
-    if entitiesFolder then
-        for _, entity in ipairs(entitiesFolder:GetChildren()) do
-            if States:GetStateValue(entity, "Dead", false) then continue end
-            
-            local head = entity:FindFirstChild("HitboxHead")
-            if not head then continue end
-
-            local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-            if not onScreen then continue end
-
-            local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-            if dist < bestDist and dist < Settings.FOV then
-                bestDist = dist
-                targetPos = head.Position
-            end
+            targetPart = head
         end
     end
 end
 
+RunService.PreRender:Connect(updateTarget)
+
 -- ============================================================
--- 核心 Hook (加入随机散布，模拟人类手抖)
+-- Universal Hooks (Raycast & Mouse)
 -- ============================================================
-if hookmetamethod and getnamecallmethod then
+local function isShootingAndAiming()
+    return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) 
+       and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+end
+
+if hookmetamethod and getnamecallmethod and checkcaller then
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if isDead then return oldNamecall(self, ...) end
+        if isDead or checkcaller() then return oldNamecall(self, ...) end
         
         local method = getnamecallmethod()
 
-        if Settings.Enabled and targetPos then
-            -- 生成随机偏移，让每次爆头位置略有不同，极其隐蔽
+        if Settings.Enabled and targetPos and isShootingAndAiming() then
+            -- Add jitter for humanization
             local jitter = Vector3.new(
                 (math.random() - 0.5) * Settings.Jitter,
                 (math.random() - 0.5) * Settings.Jitter,
@@ -154,26 +138,44 @@ if hookmetamethod and getnamecallmethod then
         end
         return oldNamecall(self, ...)
     end)
+
+    local oldIndex
+    oldIndex = hookmetamethod(game, "__index", function(self, key)
+        if isDead or checkcaller() then return oldIndex(self, key) end
+        
+        if Settings.Enabled and targetPos and isShootingAndAiming() and self == Mouse then
+            if key == "Hit" then
+                local jitter = Vector3.new(
+                    (math.random() - 0.5) * Settings.Jitter,
+                    (math.random() - 0.5) * Settings.Jitter,
+                    (math.random() - 0.5) * Settings.Jitter
+                )
+                local aimTarget = targetPos + jitter
+                local look = CFrame.lookAt(Camera.CFrame.Position, aimTarget)
+                return CFrame.new(aimTarget) * look.Rotation
+            elseif key == "Target" then
+                return targetPart
+            end
+        end
+        return oldIndex(self, key)
+    end)
 else
-    warn("XENO: hookmetamethod not found.")
+    warn("XENO: hookmetamethod or checkcaller not found. Cannot apply universal hooks.")
 end
 
--- 更新循环
-RunService.PreRender:Connect(updateTarget)
-
 -- ============================================================
--- 精致 UI (极简暗色，增加 Kill Script)
+-- Bigger UI
 -- ============================================================
 local guiParent = gethui and gethui() or game:GetService("CoreGui")
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "4080_sa_dissimulated"
+ScreenGui.Name = "4080_sa_universal"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = guiParent
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 180, 0, 110)
-MainFrame.Position = UDim2.new(0.5, -90, 0.5, -55)
+MainFrame.Size = UDim2.new(0, 220, 0, 160)
+MainFrame.Position = UDim2.new(0.5, -110, 0.5, -80)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 MainFrame.BorderSizePixel = 0
 MainFrame.Visible = false
@@ -183,9 +185,9 @@ local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(0, 8)
 UICorner.Parent = MainFrame
 
--- 标题栏 (可拖动)
+-- Title Bar
 local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, 24)
+TitleBar.Size = UDim2.new(1, 0, 0, 30)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 TitleBar.BorderSizePixel = 0
 TitleBar.Parent = MainFrame
@@ -195,88 +197,88 @@ TitleCorner.CornerRadius = UDim.new(0, 8)
 TitleCorner.Parent = TitleBar
 
 local TitleText = Instance.new("TextLabel")
-TitleText.Size = UDim2.new(1, -16, 1, 0)
-TitleText.Position = UDim2.new(0, 8, 0, 0)
+TitleText.Size = UDim2.new(1, -20, 1, 0)
+TitleText.Position = UDim2.new(0, 10, 0, 0)
 TitleText.BackgroundTransparency = 1
-TitleText.Text = "4080 | SILENT"
-TitleText.TextColor3 = Color3.fromRGB(200, 200, 200)
-TitleText.Font = Enum.Font.GothamSemibold
-TitleText.TextSize = 11
+TitleText.Text = "4080 | UNIVERSAL SILENT"
+TitleText.TextColor3 = Color3.fromRGB(220, 220, 220)
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextSize = 12
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = TitleBar
 
--- 开关按钮
+-- Toggle Button
 local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Size = UDim2.new(1, -16, 0, 26)
-ToggleBtn.Position = UDim2.new(0, 8, 0, 30)
+ToggleBtn.Size = UDim2.new(1, -20, 0, 32)
+ToggleBtn.Position = UDim2.new(0, 10, 0, 40)
 ToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 ToggleBtn.Text = "SILENT: OFF"
 ToggleBtn.TextColor3 = Color3.fromRGB(150, 150, 150)
-ToggleBtn.Font = Enum.Font.GothamSemibold
-ToggleBtn.TextSize = 11
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 12
 ToggleBtn.BorderSizePixel = 0
 ToggleBtn.Parent = MainFrame
 
 local BtnCorner = Instance.new("UICorner")
-BtnCorner.CornerRadius = UDim.new(0, 4)
+BtnCorner.CornerRadius = UDim.new(0, 6)
 BtnCorner.Parent = ToggleBtn
 
--- 强度标签
+-- Strength Label
 local StrengthLabel = Instance.new("TextLabel")
-StrengthLabel.Size = UDim2.new(0, 60, 0, 16)
-StrengthLabel.Position = UDim2.new(0, 8, 0, 65)
+StrengthLabel.Size = UDim2.new(0, 80, 0, 20)
+StrengthLabel.Position = UDim2.new(0, 10, 0, 80)
 StrengthLabel.BackgroundTransparency = 1
 StrengthLabel.Text = "STRENGTH"
-StrengthLabel.TextColor3 = Color3.fromRGB(100, 100, 100)
-StrengthLabel.Font = Enum.Font.Gotham
-StrengthLabel.TextSize = 9
+StrengthLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+StrengthLabel.Font = Enum.Font.GothamBold
+StrengthLabel.TextSize = 10
 StrengthLabel.TextXAlignment = Enum.TextXAlignment.Left
 StrengthLabel.Parent = MainFrame
 
--- 强度条背景
+-- Strength Bar Background
 local StrengthBar = Instance.new("Frame")
-StrengthBar.Size = UDim2.new(0, 100, 0, 6)
-StrengthBar.Position = UDim2.new(0, 68, 0, 70)
+StrengthBar.Size = UDim2.new(0, 110, 0, 8)
+StrengthBar.Position = UDim2.new(0, 90, 0, 86)
 StrengthBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 StrengthBar.BorderSizePixel = 0
 StrengthBar.Parent = MainFrame
 
 local BarCorner = Instance.new("UICorner")
-BarCorner.CornerRadius = UDim.new(0, 3)
+BarCorner.CornerRadius = UDim.new(0, 4)
 BarCorner.Parent = StrengthBar
 
--- 强度条填充
+-- Strength Fill
 local StrengthFill = Instance.new("Frame")
 StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
-StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 200, 120)
+StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 220, 140)
 StrengthFill.BorderSizePixel = 0
 StrengthFill.Parent = StrengthBar
 
 local FillCorner = Instance.new("UICorner")
-FillCorner.CornerRadius = UDim.new(0, 3)
+FillCorner.CornerRadius = UDim.new(0, 4)
 FillCorner.Parent = StrengthFill
 
--- Kill 脚本按钮
+-- Kill Script Button
 local KillBtn = Instance.new("TextButton")
-KillBtn.Size = UDim2.new(1, -16, 0, 20)
-KillBtn.Position = UDim2.new(0, 8, 0, 84)
-KillBtn.BackgroundColor3 = Color3.fromRGB(50, 20, 20)
+KillBtn.Size = UDim2.new(1, -20, 0, 28)
+KillBtn.Position = UDim2.new(0, 10, 0, 120)
+KillBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
 KillBtn.Text = "KILL SCRIPT"
-KillBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
-KillBtn.Font = Enum.Font.GothamSemibold
-KillBtn.TextSize = 10
+KillBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
+KillBtn.Font = Enum.Font.GothamBold
+KillBtn.TextSize = 11
 KillBtn.BorderSizePixel = 0
 KillBtn.Parent = MainFrame
 
 local KillCorner = Instance.new("UICorner")
-KillCorner.CornerRadius = UDim.new(0, 4)
+KillCorner.CornerRadius = UDim.new(0, 6)
 KillCorner.Parent = KillBtn
 
 -- ============================================================
--- 交互逻辑
+-- Interactions
 -- ============================================================
 
--- F8 呼出/隐藏面板
+-- F8 Toggle
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed or isDead then return end
     if input.KeyCode == Enum.KeyCode.F8 then
@@ -284,16 +286,16 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- 开关点击
+-- Toggle Logic
 ToggleBtn.MouseButton1Click:Connect(function()
     if isDead then return end
     Settings.Enabled = not Settings.Enabled
     ToggleBtn.Text = Settings.Enabled and "SILENT: ON" or "SILENT: OFF"
     ToggleBtn.TextColor3 = Settings.Enabled and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(150, 150, 150)
-    ToggleBtn.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(0, 40, 20) or Color3.fromRGB(30, 30, 30)
+    ToggleBtn.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(0, 50, 25) or Color3.fromRGB(30, 30, 30)
 end)
 
--- 拖动滑块 (真实鼠标拖动)
+-- Slider Drag
 local draggingSlider = false
 
 StrengthBar.InputBegan:Connect(function(input)
@@ -318,7 +320,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- 拖动窗口
+-- Window Drag
 local draggingFrame = false
 local dragStart, startPos
 
@@ -347,9 +349,8 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- 销毁脚本
+-- Kill Script
 KillBtn.MouseButton1Click:Connect(function()
     isDead = true
     ScreenGui:Destroy()
-    -- 注：hook 会在下一次触发时自动失效并走原本逻辑
 end)
