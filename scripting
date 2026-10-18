@@ -1,6 +1,6 @@
--- ratman4080 silent aim v8 | Street Life Remastered polished edition
+-- ratman4080 silent aim v9 | dissimulated polished edition
 -- based on Phemonaz open-source hook, refactored for XENO
--- F8 GUI | team check | strength slider
+-- F8 GUI | team check | real slider | random jitter | kill script
 
 print("sit activated")
 
@@ -18,7 +18,7 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- ============================================================
--- 依赖模块 (采用安全的 pcall 获取，防止游戏更新导致脚本崩溃)
+-- 依赖模块 (安全 pcall 获取)
 -- ============================================================
 local function safeRequire(parent, name)
     local obj = parent:FindFirstChild(name, true)
@@ -31,8 +31,6 @@ end
 
 local neuron = safeRequire(ReplicatedFirst, "neuron")
 local States = safeRequire(ReplicatedStorage, "States")
-local GenerateCommand = safeRequire(ReplicatedFirst, "GenerateCommand")
-local CameraHandler = safeRequire(ReplicatedStorage, "CameraHandler")
 local Effects = safeRequire(ReplicatedStorage, "Effects")
 
 -- ============================================================
@@ -40,9 +38,12 @@ local Effects = safeRequire(ReplicatedStorage, "Effects")
 -- ============================================================
 local Settings = {
     Enabled = false,
-    Strength = 1.0, -- 1.0 = 完全锁定头部, 0.0 = 原始瞄准
+    Strength = 1.0, -- 1.0 = 完全锁定, 0.0 = 原始瞄准
+    FOV = 160,      -- 隐蔽性：只锁定准星附近的敌人
+    Jitter = 0.3,   -- 隐蔽性：在头部周围随机散布的半径 (Studs)
 }
 
+local isDead = false
 local targetPos = nil
 
 -- ============================================================
@@ -54,11 +55,10 @@ local function isSameTeam(player)
 end
 
 -- ============================================================
--- 目标获取 (借鉴开源脚本 get_closest_player 逻辑)
+-- 目标获取 (加入 FOV 限制，防视觉穿帮)
 -- ============================================================
 local function updateTarget()
-    if not Camera then return end
-    if not neuron or not States then return end
+    if isDead or not Camera or not neuron or not States then return end
     
     local entitiesFolder = Workspace:FindFirstChild("Entities", true)
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
@@ -81,13 +81,13 @@ local function updateTarget()
         if not onScreen then continue end
 
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-        if dist < bestDist then
+        if dist < bestDist and dist < Settings.FOV then
             bestDist = dist
             targetPos = head.Position
         end
     end
 
-    -- 遍历 NPC/实体 (无队伍限制)
+    -- 遍历 NPC/实体
     if entitiesFolder then
         for _, entity in ipairs(entitiesFolder:GetChildren()) do
             if States:GetStateValue(entity, "Dead", false) then continue end
@@ -99,7 +99,7 @@ local function updateTarget()
             if not onScreen then continue end
 
             local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-            if dist < bestDist then
+            if dist < bestDist and dist < Settings.FOV then
                 bestDist = dist
                 targetPos = head.Position
             end
@@ -108,36 +108,46 @@ local function updateTarget()
 end
 
 -- ============================================================
--- 核心 Hook (使用 XENO 原生 hookmetamethod)
+-- 核心 Hook (加入随机散布，模拟人类手抖)
 -- ============================================================
 if hookmetamethod and getnamecallmethod then
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if isDead then return oldNamecall(self, ...) end
+        
         local method = getnamecallmethod()
 
         if Settings.Enabled and targetPos then
+            -- 生成随机偏移，让每次爆头位置略有不同，极其隐蔽
+            local jitter = Vector3.new(
+                (math.random() - 0.5) * Settings.Jitter,
+                (math.random() - 0.5) * Settings.Jitter,
+                (math.random() - 0.5) * Settings.Jitter
+            )
+            local aimTarget = targetPos + jitter
+
             if method == "Raycast" then
                 local origin, direction, params = ...
                 if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
-                    local aimDir = (targetPos - origin).Unit * direction.Magnitude
+                    local aimDir = (aimTarget - origin).Unit * direction.Magnitude
                     return oldNamecall(self, origin, direction:Lerp(aimDir, Settings.Strength), params)
                 end
             elseif method == "FindPartOnRayWithIgnoreList" then
                 local ray, ignoreList, cubes = ...
                 if typeof(ray) == "Ray" then
-                    local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
+                    local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
                     return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreList, cubes)
                 end
             elseif method == "FindPartOnRayWithWhitelist" then
                 local ray, whitelist = ...
                 if typeof(ray) == "Ray" then
-                    local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
+                    local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
                     return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), whitelist)
                 end
             elseif method == "FindPartOnRay" then
                 local ray, ignoreDesc, cubes = ...
                 if typeof(ray) == "Ray" then
-                    local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
+                    local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
                     return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreDesc, cubes)
                 end
             end
@@ -145,26 +155,25 @@ if hookmetamethod and getnamecallmethod then
         return oldNamecall(self, ...)
     end)
 else
-    warn("XENO: hookmetamethod not found, aborting hooks.")
+    warn("XENO: hookmetamethod not found.")
 end
 
--- 每帧更新目标位置 (使用 PreRender 以保证流畅)
+-- 更新循环
 RunService.PreRender:Connect(updateTarget)
 
 -- ============================================================
--- 精致 UI (极简暗色风格，防封保护)
+-- 精致 UI (极简暗色，增加 Kill Script)
 -- ============================================================
 local guiParent = gethui and gethui() or game:GetService("CoreGui")
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "4080_sa_polished"
+ScreenGui.Name = "4080_sa_dissimulated"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = guiParent
 
--- 主框架
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 180, 0, 85)
-MainFrame.Position = UDim2.new(0.5, -90, 0.5, -42)
+MainFrame.Size = UDim2.new(0, 180, 0, 110)
+MainFrame.Position = UDim2.new(0.5, -90, 0.5, -55)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 MainFrame.BorderSizePixel = 0
 MainFrame.Visible = false
@@ -189,7 +198,7 @@ local TitleText = Instance.new("TextLabel")
 TitleText.Size = UDim2.new(1, -16, 1, 0)
 TitleText.Position = UDim2.new(0, 8, 0, 0)
 TitleText.BackgroundTransparency = 1
-TitleText.Text = "4080 | SILENT AIM"
+TitleText.Text = "4080 | SILENT"
 TitleText.TextColor3 = Color3.fromRGB(200, 200, 200)
 TitleText.Font = Enum.Font.GothamSemibold
 TitleText.TextSize = 11
@@ -198,8 +207,8 @@ TitleText.Parent = TitleBar
 
 -- 开关按钮
 local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Size = UDim2.new(1, -16, 0, 28)
-ToggleBtn.Position = UDim2.new(0, 8, 0, 32)
+ToggleBtn.Size = UDim2.new(1, -16, 0, 26)
+ToggleBtn.Position = UDim2.new(0, 8, 0, 30)
 ToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 ToggleBtn.Text = "SILENT: OFF"
 ToggleBtn.TextColor3 = Color3.fromRGB(150, 150, 150)
@@ -226,11 +235,15 @@ StrengthLabel.Parent = MainFrame
 
 -- 强度条背景
 local StrengthBar = Instance.new("Frame")
-StrengthBar.Size = UDim2.new(0, 90, 0, 4)
-StrengthBar.Position = UDim2.new(0, 70, 0, 72)
+StrengthBar.Size = UDim2.new(0, 100, 0, 6)
+StrengthBar.Position = UDim2.new(0, 68, 0, 70)
 StrengthBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 StrengthBar.BorderSizePixel = 0
 StrengthBar.Parent = MainFrame
+
+local BarCorner = Instance.new("UICorner")
+BarCorner.CornerRadius = UDim.new(0, 3)
+BarCorner.Parent = StrengthBar
 
 -- 强度条填充
 local StrengthFill = Instance.new("Frame")
@@ -239,13 +252,33 @@ StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 200, 120)
 StrengthFill.BorderSizePixel = 0
 StrengthFill.Parent = StrengthBar
 
+local FillCorner = Instance.new("UICorner")
+FillCorner.CornerRadius = UDim.new(0, 3)
+FillCorner.Parent = StrengthFill
+
+-- Kill 脚本按钮
+local KillBtn = Instance.new("TextButton")
+KillBtn.Size = UDim2.new(1, -16, 0, 20)
+KillBtn.Position = UDim2.new(0, 8, 0, 84)
+KillBtn.BackgroundColor3 = Color3.fromRGB(50, 20, 20)
+KillBtn.Text = "KILL SCRIPT"
+KillBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+KillBtn.Font = Enum.Font.GothamSemibold
+KillBtn.TextSize = 10
+KillBtn.BorderSizePixel = 0
+KillBtn.Parent = MainFrame
+
+local KillCorner = Instance.new("UICorner")
+KillCorner.CornerRadius = UDim.new(0, 4)
+KillCorner.Parent = KillBtn
+
 -- ============================================================
 -- 交互逻辑
 -- ============================================================
 
 -- F8 呼出/隐藏面板
 UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
+    if processed or isDead then return end
     if input.KeyCode == Enum.KeyCode.F8 then
         MainFrame.Visible = not MainFrame.Visible
     end
@@ -253,43 +286,70 @@ end)
 
 -- 开关点击
 ToggleBtn.MouseButton1Click:Connect(function()
+    if isDead then return end
     Settings.Enabled = not Settings.Enabled
     ToggleBtn.Text = Settings.Enabled and "SILENT: ON" or "SILENT: OFF"
     ToggleBtn.TextColor3 = Settings.Enabled and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(150, 150, 150)
     ToggleBtn.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(0, 40, 20) or Color3.fromRGB(30, 30, 30)
 end)
 
--- 强度调整 (滚轮)
+-- 拖动滑块 (真实鼠标拖动)
+local draggingSlider = false
+
 StrengthBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseWheel then
-        Settings.Strength = math.clamp(Settings.Strength + input.Position.Z * 0.1, 0.0, 1.0)
-        StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
+    if isDead then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingSlider = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        draggingSlider = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if isDead then return end
+    if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local percent = math.clamp((input.Position.X - StrengthBar.AbsolutePosition.X) / StrengthBar.AbsoluteSize.X, 0, 1)
+        Settings.Strength = percent
+        StrengthFill.Size = UDim2.new(percent, 0, 1, 0)
     end
 end)
 
 -- 拖动窗口
-local dragging = false
+local draggingFrame = false
 local dragStart, startPos
 
 TitleBar.InputBegan:Connect(function(input)
+    if isDead then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
+        draggingFrame = true
         dragStart = input.Position
         startPos = MainFrame.Position
         input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
+                draggingFrame = false
             end
         end)
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+    if isDead then return end
+    if draggingFrame and input.UserInputType == Enum.UserInputType.MouseMovement then
         local delta = input.Position - dragStart
         MainFrame.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y
         )
     end
+end)
+
+-- 销毁脚本
+KillBtn.MouseButton1Click:Connect(function()
+    isDead = true
+    ScreenGui:Destroy()
+    -- 注：hook 会在下一次触发时自动失效并走原本逻辑
 end)
