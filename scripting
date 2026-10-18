@@ -1,0 +1,193 @@
+-- ratman4080 silent aim v3 | street life remastered
+-- prints "sit activated" on execute
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+print("sit activated")
+
+local Settings = {
+    Enabled = false,
+    Strength = 1.0,
+}
+
+local function isSameTeam(player)
+    if not player.Team or not LocalPlayer.Team then return false end
+    return player.Team == LocalPlayer.Team
+end
+
+local function getTarget()
+    local bestPart = nil
+    local bestDist = math.huge
+    local mousePos = UserInputService:GetMouseLocation()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if isSameTeam(player) then continue end
+        if not player.Character then continue end
+
+        local head = player.Character:FindFirstChild("Head")
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        if not head or not humanoid or humanoid.Health <= 0 then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+        if dist < bestDist then
+            bestDist = dist
+            bestPart = head
+        end
+    end
+    return bestPart
+end
+
+-- Hook both Raycast and old Ray API
+local mt = getrawmetatable(game)
+local oldNamecall = mt.__namecall
+setreadonly(mt, false)
+
+mt.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = { ... }
+
+    if Settings.Enabled and (method == "Raycast" or method == "FindPartOnRayWithIgnoreList") then
+        local target = getTarget()
+        if target then
+            if method == "Raycast" then
+                -- Raycast(origin, direction, params)
+                local origin = args[1]
+                local direction = args[2]
+                local params = args[3]
+                local newDir = (target.Position - origin)
+                return oldNamecall(self, origin, newDir, params)
+            elseif method == "FindPartOnRayWithIgnoreList" then
+                -- FindPartOnRayWithIgnoreList(ray, ignoreList)
+                local ray = args[1]
+                local ignoreList = args[2]
+                local newRay = Ray.new(ray.Origin, target.Position - ray.Origin)
+                return oldNamecall(self, newRay, ignoreList)
+            end
+        end
+    end
+
+    return oldNamecall(self, ...)
+end)
+
+setreadonly(mt, true)
+
+-- Minimal GUI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "4080_gui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game:GetService("CoreGui")
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 160, 0, 70)
+Frame.Position = UDim2.new(0.5, -80, 0.5, -35)
+Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+Frame.BorderSizePixel = 0
+Frame.Visible = false
+Frame.Parent = ScreenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 6)
+corner.Parent = Frame
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(1, -16, 0, 28)
+ToggleBtn.Position = UDim2.new(0, 8, 0, 8)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+ToggleBtn.Text = "SILENT: OFF"
+ToggleBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+ToggleBtn.Font = Enum.Font.Gotham
+ToggleBtn.TextSize = 12
+ToggleBtn.BorderSizePixel = 0
+ToggleBtn.Parent = Frame
+
+local tCorner = Instance.new("UICorner")
+tCorner.CornerRadius = UDim.new(0, 4)
+tCorner.Parent = ToggleBtn
+
+local StrengthLabel = Instance.new("TextLabel")
+StrengthLabel.Size = UDim2.new(0, 60, 0, 16)
+StrengthLabel.Position = UDim2.new(0, 8, 0, 42)
+StrengthLabel.BackgroundTransparency = 1
+StrengthLabel.Text = "STRENGTH"
+StrengthLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+StrengthLabel.Font = Enum.Font.Gotham
+StrengthLabel.TextSize = 10
+StrengthLabel.TextXAlignment = Enum.TextXAlignment.Left
+StrengthLabel.Parent = Frame
+
+local StrengthBar = Instance.new("Frame")
+StrengthBar.Size = UDim2.new(0, 70, 0, 4)
+StrengthBar.Position = UDim2.new(0, 70, 0, 50)
+StrengthBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+StrengthBar.BorderSizePixel = 0
+StrengthBar.Parent = Frame
+
+local StrengthFill = Instance.new("Frame")
+StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
+StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+StrengthFill.BorderSizePixel = 0
+StrengthFill.Parent = StrengthBar
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.F8 then
+        Frame.Visible = not Frame.Visible
+    end
+end)
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    Settings.Enabled = not Settings.Enabled
+    if Settings.Enabled then
+        ToggleBtn.Text = "SILENT: ON"
+        ToggleBtn.TextColor3 = Color3.fromRGB(0, 255, 120)
+    else
+        ToggleBtn.Text = "SILENT: OFF"
+        ToggleBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    end
+end)
+
+StrengthBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseWheel then
+        Settings.Strength = math.clamp(Settings.Strength + input.Position.Z * 0.1, 0.1, 1.0)
+        StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
+    end
+end)
+
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+Frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = Frame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        Frame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
