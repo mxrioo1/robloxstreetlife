@@ -1,48 +1,81 @@
--- ratman4080 silent aim v6 | XENO polished
+-- ratman4080 silent aim v8 | Street Life Remastered polished edition
+-- based on Phemonaz open-source hook, refactored for XENO
+-- F8 GUI | team check | strength slider
+
 print("sit activated")
 
-local function safe_service(name)
-    local success, s = pcall(function() return cloneref(game:GetService(name)) end)
-    if success and s then return s end
-    return game:GetService(name)
-end
-
-local Players = safe_service("Players")
-local RunService = safe_service("RunService")
-local UserInputService = safe_service("UserInputService")
-local Workspace = safe_service("Workspace")
+-- ============================================================
+-- 服务与引用
+-- ============================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local Mouse = LocalPlayer:GetMouse()
 
+-- ============================================================
+-- 依赖模块 (采用安全的 pcall 获取，防止游戏更新导致脚本崩溃)
+-- ============================================================
+local function safeRequire(parent, name)
+    local obj = parent:FindFirstChild(name, true)
+    if obj then
+        local success, result = pcall(require, obj)
+        if success then return result end
+    end
+    return nil
+end
+
+local neuron = safeRequire(ReplicatedFirst, "neuron")
+local States = safeRequire(ReplicatedStorage, "States")
+local GenerateCommand = safeRequire(ReplicatedFirst, "GenerateCommand")
+local CameraHandler = safeRequire(ReplicatedStorage, "CameraHandler")
+local Effects = safeRequire(ReplicatedStorage, "Effects")
+
+-- ============================================================
+-- 配置
+-- ============================================================
 local Settings = {
     Enabled = false,
-    Strength = 1.0,
+    Strength = 1.0, -- 1.0 = 完全锁定头部, 0.0 = 原始瞄准
 }
 
 local targetPos = nil
 
+-- ============================================================
+-- 团队检查
+-- ============================================================
 local function isSameTeam(player)
     if not player.Team or not LocalPlayer.Team then return false end
     return player.Team == LocalPlayer.Team
 end
 
+-- ============================================================
+-- 目标获取 (借鉴开源脚本 get_closest_player 逻辑)
+-- ============================================================
 local function updateTarget()
+    if not Camera then return end
+    if not neuron or not States then return end
+    
+    local entitiesFolder = Workspace:FindFirstChild("Entities", true)
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local bestDist = math.huge
     targetPos = nil
 
+    -- 遍历玩家
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
         if isSameTeam(player) then continue end
 
-        local char = player.Character
+        local char = neuron:get_character(player)
         if not char then continue end
+        if States:GetStateValue(char, "Dead", false) then continue end
 
-        local head = char:FindFirstChild("Head")
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if not head or not humanoid or humanoid.Health <= 0 then continue end
+        local head = char:FindFirstChild("HitboxHead")
+        if not head then continue end
 
         local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
         if not onScreen then continue end
@@ -53,137 +86,180 @@ local function updateTarget()
             targetPos = head.Position
         end
     end
+
+    -- 遍历 NPC/实体 (无队伍限制)
+    if entitiesFolder then
+        for _, entity in ipairs(entitiesFolder:GetChildren()) do
+            if States:GetStateValue(entity, "Dead", false) then continue end
+            
+            local head = entity:FindFirstChild("HitboxHead")
+            if not head then continue end
+
+            local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+            if not onScreen then continue end
+
+            local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+            if dist < bestDist then
+                bestDist = dist
+                targetPos = head.Position
+            end
+        end
+    end
 end
 
+-- ============================================================
+-- 核心 Hook (使用 XENO 原生 hookmetamethod)
+-- ============================================================
+if hookmetamethod and getnamecallmethod then
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+
+        if Settings.Enabled and targetPos then
+            if method == "Raycast" then
+                local origin, direction, params = ...
+                if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
+                    local aimDir = (targetPos - origin).Unit * direction.Magnitude
+                    return oldNamecall(self, origin, direction:Lerp(aimDir, Settings.Strength), params)
+                end
+            elseif method == "FindPartOnRayWithIgnoreList" then
+                local ray, ignoreList, cubes = ...
+                if typeof(ray) == "Ray" then
+                    local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
+                    return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreList, cubes)
+                end
+            elseif method == "FindPartOnRayWithWhitelist" then
+                local ray, whitelist = ...
+                if typeof(ray) == "Ray" then
+                    local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
+                    return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), whitelist)
+                end
+            elseif method == "FindPartOnRay" then
+                local ray, ignoreDesc, cubes = ...
+                if typeof(ray) == "Ray" then
+                    local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
+                    return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreDesc, cubes)
+                end
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+else
+    warn("XENO: hookmetamethod not found, aborting hooks.")
+end
+
+-- 每帧更新目标位置 (使用 PreRender 以保证流畅)
 RunService.PreRender:Connect(updateTarget)
 
--- Hooks
-local mt = getrawmetatable(game)
-local oldNamecall = mt.__namecall
-local oldIndex = mt.__index
-setreadonly(mt, false)
+-- ============================================================
+-- 精致 UI (极简暗色风格，防封保护)
+-- ============================================================
+local guiParent = gethui and gethui() or game:GetService("CoreGui")
 
-mt.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-
-    if Settings.Enabled and targetPos then
-        if method == "Raycast" then
-            local origin, direction, params = ...
-            if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
-                local aimDir = (targetPos - origin).Unit * direction.Magnitude
-                return oldNamecall(self, origin, direction:Lerp(aimDir, Settings.Strength), params)
-            end
-        elseif method == "FindPartOnRayWithIgnoreList" then
-            local ray, ignoreList, cubes = ...
-            if typeof(ray) == "Ray" then
-                local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
-                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreList, cubes)
-            end
-        elseif method == "FindPartOnRayWithWhitelist" then
-            local ray, whitelist = ...
-            if typeof(ray) == "Ray" then
-                local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
-                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), whitelist)
-            end
-        elseif method == "FindPartOnRay" then
-            local ray, ignoreDesc, cubes = ...
-            if typeof(ray) == "Ray" then
-                local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
-                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreDesc, cubes)
-            end
-        end
-    end
-
-    return oldNamecall(self, ...)
-end)
-
-mt.__index = newcclosure(function(self, key)
-    if Settings.Enabled and targetPos and self == Mouse then
-        if key == "Hit" then
-            local look = CFrame.lookAt(Camera.CFrame.Position, targetPos)
-            return CFrame.new(targetPos) * look.Rotation
-        elseif key == "Target" then
-            local ray = Ray.new(Camera.CFrame.Position, (targetPos - Camera.CFrame.Position).Unit * 1000)
-            return Workspace:FindPartOnRay(ray, LocalPlayer.Character)
-        end
-    end
-    return oldIndex(self, key)
-end)
-
-setreadonly(mt, true)
-
--- GUI
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "4080_sa"
+ScreenGui.Name = "4080_sa_polished"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = game:GetService("CoreGui")
+ScreenGui.Parent = guiParent
 
-local Frame = Instance.new("Frame")
-Frame.Size = UDim2.new(0, 175, 0, 78)
-Frame.Position = UDim2.new(0.5, -87, 0.5, -39)
-Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-Frame.BorderSizePixel = 0
-Frame.Visible = false
-Frame.Parent = ScreenGui
+-- 主框架
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 180, 0, 85)
+MainFrame.Position = UDim2.new(0.5, -90, 0.5, -42)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
 
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 6)
-corner.Parent = Frame
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
 
+-- 标题栏 (可拖动)
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 24)
+TitleBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 8)
+TitleCorner.Parent = TitleBar
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size = UDim2.new(1, -16, 1, 0)
+TitleText.Position = UDim2.new(0, 8, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text = "4080 | SILENT AIM"
+TitleText.TextColor3 = Color3.fromRGB(200, 200, 200)
+TitleText.Font = Enum.Font.GothamSemibold
+TitleText.TextSize = 11
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = TitleBar
+
+-- 开关按钮
 local ToggleBtn = Instance.new("TextButton")
 ToggleBtn.Size = UDim2.new(1, -16, 0, 28)
-ToggleBtn.Position = UDim2.new(0, 8, 0, 8)
+ToggleBtn.Position = UDim2.new(0, 8, 0, 32)
 ToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 ToggleBtn.Text = "SILENT: OFF"
-ToggleBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
-ToggleBtn.Font = Enum.Font.Gotham
-ToggleBtn.TextSize = 12
+ToggleBtn.TextColor3 = Color3.fromRGB(150, 150, 150)
+ToggleBtn.Font = Enum.Font.GothamSemibold
+ToggleBtn.TextSize = 11
 ToggleBtn.BorderSizePixel = 0
-ToggleBtn.Parent = Frame
+ToggleBtn.Parent = MainFrame
 
-local tCorner = Instance.new("UICorner")
-tCorner.CornerRadius = UDim.new(0, 4)
-tCorner.Parent = ToggleBtn
+local BtnCorner = Instance.new("UICorner")
+BtnCorner.CornerRadius = UDim.new(0, 4)
+BtnCorner.Parent = ToggleBtn
 
+-- 强度标签
 local StrengthLabel = Instance.new("TextLabel")
-StrengthLabel.Size = UDim2.new(0, 62, 0, 16)
-StrengthLabel.Position = UDim2.new(0, 8, 0, 46)
+StrengthLabel.Size = UDim2.new(0, 60, 0, 16)
+StrengthLabel.Position = UDim2.new(0, 8, 0, 65)
 StrengthLabel.BackgroundTransparency = 1
 StrengthLabel.Text = "STRENGTH"
-StrengthLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+StrengthLabel.TextColor3 = Color3.fromRGB(100, 100, 100)
 StrengthLabel.Font = Enum.Font.Gotham
-StrengthLabel.TextSize = 10
+StrengthLabel.TextSize = 9
 StrengthLabel.TextXAlignment = Enum.TextXAlignment.Left
-StrengthLabel.Parent = Frame
+StrengthLabel.Parent = MainFrame
 
+-- 强度条背景
 local StrengthBar = Instance.new("Frame")
-StrengthBar.Size = UDim2.new(0, 78, 0, 4)
-StrengthBar.Position = UDim2.new(0, 78, 0, 54)
+StrengthBar.Size = UDim2.new(0, 90, 0, 4)
+StrengthBar.Position = UDim2.new(0, 70, 0, 72)
 StrengthBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 StrengthBar.BorderSizePixel = 0
-StrengthBar.Parent = Frame
+StrengthBar.Parent = MainFrame
 
+-- 强度条填充
 local StrengthFill = Instance.new("Frame")
 StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
-StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 200, 120)
 StrengthFill.BorderSizePixel = 0
 StrengthFill.Parent = StrengthBar
 
+-- ============================================================
+-- 交互逻辑
+-- ============================================================
+
+-- F8 呼出/隐藏面板
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
     if input.KeyCode == Enum.KeyCode.F8 then
-        Frame.Visible = not Frame.Visible
+        MainFrame.Visible = not MainFrame.Visible
     end
 end)
 
+-- 开关点击
 ToggleBtn.MouseButton1Click:Connect(function()
     Settings.Enabled = not Settings.Enabled
     ToggleBtn.Text = Settings.Enabled and "SILENT: ON" or "SILENT: OFF"
-    ToggleBtn.TextColor3 = Settings.Enabled
-        and Color3.fromRGB(0, 255, 120)
-        or Color3.fromRGB(180, 180, 180)
+    ToggleBtn.TextColor3 = Settings.Enabled and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(150, 150, 150)
+    ToggleBtn.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(0, 40, 20) or Color3.fromRGB(30, 30, 30)
 end)
 
+-- 强度调整 (滚轮)
 StrengthBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseWheel then
         Settings.Strength = math.clamp(Settings.Strength + input.Position.Z * 0.1, 0.0, 1.0)
@@ -191,14 +267,15 @@ StrengthBar.InputBegan:Connect(function(input)
     end
 end)
 
+-- 拖动窗口
 local dragging = false
 local dragStart, startPos
 
-Frame.InputBegan:Connect(function(input)
+TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         dragging = true
         dragStart = input.Position
-        startPos = Frame.Position
+        startPos = MainFrame.Position
         input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then
                 dragging = false
@@ -210,7 +287,7 @@ end)
 UserInputService.InputChanged:Connect(function(input)
     if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
         local delta = input.Position - dragStart
-        Frame.Position = UDim2.new(
+        MainFrame.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y
         )
