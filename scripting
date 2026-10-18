@@ -1,89 +1,143 @@
--- ratman4080 silent aim v3 | street life remastered
+-- ratman4080 silent aim v4 | street life remastered
+-- hooks Effects.Identify + GenerateCommand.GetCameraAngles
 -- prints "sit activated" on execute
 
+print("sit activated")
+
+-- Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-print("sit activated")
-
+-- Settings
 local Settings = {
     Enabled = false,
-    Strength = 1.0,
+    Strength = 1.0, -- 1.0 = full redirect, lower = softer
 }
 
+-- Team check
 local function isSameTeam(player)
-    if not player.Team or not LocalPlayer.Team then return false end
+    if not player.Team or not LocalPlayer.Team then
+        return false
+    end
     return player.Team == LocalPlayer.Team
 end
 
-local function getTarget()
-    local bestPart = nil
-    local bestDist = math.huge
-    local mousePos = UserInputService:GetMouseLocation()
+-- Modules required by the game
+local neuron = require(ReplicatedFirst:FindFirstChild("neuron", true))
+local States = require(ReplicatedStorage:FindFirstChild("States", true))
+local GenerateCommand = require(ReplicatedFirst:FindFirstChild("GenerateCommand", true))
+local CameraHandler = require(ReplicatedStorage:FindFirstChild("CameraHandler", true))
+local Effects = require(ReplicatedStorage:FindFirstChild("Effects", true))
 
+-- Target cache
+local targetPos = nil
+
+-- Find closest enemy head (skips teammates)
+local function findTarget()
+    local entitiesFolder = Workspace:FindFirstChild("Entities", true)
+    if not entitiesFolder then
+        return
+    end
+
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local bestDist = 9e9
+
+    -- Players
     for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-        if isSameTeam(player) then continue end
-        if not player.Character then continue end
+        if player == LocalPlayer then
+            continue
+        end
+        if isSameTeam(player) then
+            continue
+        end
 
-        local head = player.Character:FindFirstChild("Head")
-        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-        if not head or not humanoid or humanoid.Health <= 0 then continue end
+        local char = neuron:get_character(player)
+        if not char then
+            continue
+        end
+
+        local head = char:FindFirstChild("HitboxHead")
+        if not head then
+            continue
+        end
+
+        if States:GetStateValue(char, "Dead", false) then
+            continue
+        end
 
         local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-        if not onScreen then continue end
+        if not onScreen then
+            continue
+        end
 
-        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
         if dist < bestDist then
             bestDist = dist
-            bestPart = head
+            targetPos = head.Position
         end
     end
-    return bestPart
+
+    -- NPCs / entities (no team check applies)
+    for _, entity in ipairs(entitiesFolder:GetChildren()) do
+        local head = entity:FindFirstChild("HitboxHead")
+        if not head then
+            continue
+        end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+        if not onScreen then
+            continue
+        end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+        if dist < bestDist then
+            bestDist = dist
+            targetPos = head.Position
+        end
+    end
 end
 
--- Hook both Raycast and old Ray API
-local mt = getrawmetatable(game)
-local oldNamecall = mt.__namecall
-setreadonly(mt, false)
+-- Update target every frame
+RunService.PreRender:Connect(findTarget)
 
-mt.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
+-- Hook 1: Camera angles (used by game for shot direction)
+local oldGetCameraAngles
+oldGetCameraAngles = hookfunction(GenerateCommand.GetCameraAngles, newlclosure(function(...)
+    if not CameraHandler.firstPerson then
+        return oldGetCameraAngles(...)
+    end
+    local current = CameraHandler.currentRotation
+    return current.X, current.Y
+end))
+
+-- Hook 2: Effects.Identify — this is where the bullet hit position is redirected
+local oldIdentify
+oldIdentify = hookfunction(Effects.Identify, newlclosure(function(self, effectType, ...)
     local args = { ... }
+    local origin = args.origin
+    local hitPos = args.hitPos
 
-    if Settings.Enabled and (method == "Raycast" or method == "FindPartOnRayWithIgnoreList") then
-        local target = getTarget()
-        if target then
-            if method == "Raycast" then
-                -- Raycast(origin, direction, params)
-                local origin = args[1]
-                local direction = args[2]
-                local params = args[3]
-                local newDir = (target.Position - origin)
-                return oldNamecall(self, origin, newDir, params)
-            elseif method == "FindPartOnRayWithIgnoreList" then
-                -- FindPartOnRayWithIgnoreList(ray, ignoreList)
-                local ray = args[1]
-                local ignoreList = args[2]
-                local newRay = Ray.new(ray.Origin, target.Position - ray.Origin)
-                return oldNamecall(self, newRay, ignoreList)
-            end
-        end
+    if Settings.Enabled and targetPos and effectType == "Shot" and origin and hitPos then
+        local originalDist = (hitPos - origin).Magnitude
+        local directionToTarget = (targetPos - origin).Unit
+        local newHitPos = origin + directionToTarget * originalDist
+
+        -- Strength: lerp between original hitPos and redirected position
+        args.hitPos = hitPos:Lerp(newHitPos, Settings.Strength)
     end
 
-    return oldNamecall(self, ...)
-end)
-
-setreadonly(mt, true)
+    return oldIdentify(self, effectType, table.unpack(args))
+end))
 
 -- Minimal GUI
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "4080_gui"
+ScreenGui.Name = "4080_silent_aim"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = game:GetService("CoreGui")
 
@@ -138,13 +192,17 @@ StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
 StrengthFill.BorderSizePixel = 0
 StrengthFill.Parent = StrengthBar
 
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
+-- F8 toggle
+game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+    if processed then
+        return
+    end
     if input.KeyCode == Enum.KeyCode.F8 then
         Frame.Visible = not Frame.Visible
     end
 end)
 
+-- Toggle silent aim
 ToggleBtn.MouseButton1Click:Connect(function()
     Settings.Enabled = not Settings.Enabled
     if Settings.Enabled then
@@ -156,6 +214,7 @@ ToggleBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- Strength scroll
 StrengthBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseWheel then
         Settings.Strength = math.clamp(Settings.Strength + input.Position.Z * 0.1, 0.1, 1.0)
@@ -163,6 +222,7 @@ StrengthBar.InputBegan:Connect(function(input)
     end
 end)
 
+-- Drag
 local dragging = false
 local dragStart = nil
 local startPos = nil
@@ -180,7 +240,7 @@ Frame.InputBegan:Connect(function(input)
     end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
+game:GetService("UserInputService").InputChanged:Connect(function(input)
     if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
         local delta = input.Position - dragStart
         Frame.Position = UDim2.new(
