@@ -1,29 +1,26 @@
--- ratman4080 silent aim v5 | universal raycast edition
--- hooks Raycast / FindPartOnRayWithIgnoreList / FindPartOnRayWithWhitelist
--- team check | strength lerp | F8 minimal GUI
-
+-- ratman4080 silent aim v6 | XENO polished
 print("sit activated")
 
-local Players = cloneref(game:GetService("Players"))
-local RunService = cloneref(game:GetService("RunService"))
-local UserInputService = cloneref(game:GetService("UserInputService"))
-local Workspace = cloneref(game:GetService("Workspace"))
+local function safe_service(name)
+    local success, s = pcall(function() return cloneref(game:GetService(name)) end)
+    if success and s then return s end
+    return game:GetService(name)
+end
+
+local Players = safe_service("Players")
+local RunService = safe_service("RunService")
+local UserInputService = safe_service("UserInputService")
+local Workspace = safe_service("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse()
 
--- ============================================================
--- Settings
--- ============================================================
 local Settings = {
     Enabled = false,
-    Strength = 1.0,   -- 1.0 = full head snap, 0.0 = original shot
+    Strength = 1.0,
 }
 
--- ============================================================
--- Target cache
--- ============================================================
 local targetPos = nil
 
 local function isSameTeam(player)
@@ -60,64 +57,39 @@ end
 
 RunService.PreRender:Connect(updateTarget)
 
--- ============================================================
--- Namecall hook for all ray methods
--- ============================================================
+-- Hooks
 local mt = getrawmetatable(game)
 local oldNamecall = mt.__namecall
+local oldIndex = mt.__index
 setreadonly(mt, false)
 
 mt.__namecall = newcclosure(function(self, ...)
     local method = getnamecallmethod()
 
-    if Settings.Enabled and targetPos and (method == "Raycast"
-        or method == "FindPartOnRayWithIgnoreList"
-        or method == "FindPartOnRayWithWhitelist"
-        or method == "FindPartOnRay") then
-
-        local args = table.pack(...)
-
-        -- Raycast(origin, direction, params) -> redirect direction
-        if method == "Raycast" and args.n >= 2 then
-            local origin = args[1]
-            local direction = args[2]
+    if Settings.Enabled and targetPos then
+        if method == "Raycast" then
+            local origin, direction, params = ...
             if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
                 local aimDir = (targetPos - origin).Unit * direction.Magnitude
-                args[2] = direction:Lerp(aimDir, Settings.Strength)
-                return oldNamecall(self, table.unpack(args, 1, args.n))
+                return oldNamecall(self, origin, direction:Lerp(aimDir, Settings.Strength), params)
             end
-        end
-
-        -- FindPartOnRayWithIgnoreList(ray, ignoreList, ...)
-        if method == "FindPartOnRayWithIgnoreList" and args.n >= 1 then
-            local ray = args[1]
+        elseif method == "FindPartOnRayWithIgnoreList" then
+            local ray, ignoreList, cubes = ...
             if typeof(ray) == "Ray" then
                 local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
-                local newRay = Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength))
-                args[1] = newRay
-                return oldNamecall(self, table.unpack(args, 1, args.n))
+                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreList, cubes)
             end
-        end
-
-        -- FindPartOnRayWithWhitelist(ray, whitelist, ...)
-        if method == "FindPartOnRayWithWhitelist" and args.n >= 1 then
-            local ray = args[1]
+        elseif method == "FindPartOnRayWithWhitelist" then
+            local ray, whitelist = ...
             if typeof(ray) == "Ray" then
                 local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
-                local newRay = Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength))
-                args[1] = newRay
-                return oldNamecall(self, table.unpack(args, 1, args.n))
+                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), whitelist)
             end
-        end
-
-        -- FindPartOnRay(ray, ignoreDescendantsInstance, ...)
-        if method == "FindPartOnRay" and args.n >= 1 then
-            local ray = args[1]
+        elseif method == "FindPartOnRay" then
+            local ray, ignoreDesc, cubes = ...
             if typeof(ray) == "Ray" then
                 local aimDir = (targetPos - ray.Origin).Unit * ray.Direction.Magnitude
-                local newRay = Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength))
-                args[1] = newRay
-                return oldNamecall(self, table.unpack(args, 1, args.n))
+                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreDesc, cubes)
             end
         end
     end
@@ -125,29 +97,22 @@ mt.__namecall = newcclosure(function(self, ...)
     return oldNamecall(self, ...)
 end)
 
-setreadonly(mt, true)
-
--- ============================================================
--- Mouse fallback (for games still using Mouse.Hit / Mouse.Target)
--- ============================================================
-local oldIndex = mt.__index
-
 mt.__index = newcclosure(function(self, key)
     if Settings.Enabled and targetPos and self == Mouse then
         if key == "Hit" then
             local look = CFrame.lookAt(Camera.CFrame.Position, targetPos)
-            return CFrame.new(targetPos) * (look - look.Position)
+            return CFrame.new(targetPos) * look.Rotation
         elseif key == "Target" then
-            return Workspace:FindPartOnRay(Ray.new(Camera.CFrame.Position,
-                (targetPos - Camera.CFrame.Position).Unit * 1000))
+            local ray = Ray.new(Camera.CFrame.Position, (targetPos - Camera.CFrame.Position).Unit * 1000)
+            return Workspace:FindPartOnRay(ray, LocalPlayer.Character)
         end
     end
     return oldIndex(self, key)
 end)
 
--- ============================================================
--- F8 Minimal GUI
--- ============================================================
+setreadonly(mt, true)
+
+-- GUI
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "4080_sa"
 ScreenGui.ResetOnSpawn = false
@@ -204,7 +169,6 @@ StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
 StrengthFill.BorderSizePixel = 0
 StrengthFill.Parent = StrengthBar
 
--- F8 toggle
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
     if input.KeyCode == Enum.KeyCode.F8 then
@@ -212,7 +176,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- Silent aim toggle
 ToggleBtn.MouseButton1Click:Connect(function()
     Settings.Enabled = not Settings.Enabled
     ToggleBtn.Text = Settings.Enabled and "SILENT: ON" or "SILENT: OFF"
@@ -221,7 +184,6 @@ ToggleBtn.MouseButton1Click:Connect(function()
         or Color3.fromRGB(180, 180, 180)
 end)
 
--- Strength scroll
 StrengthBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseWheel then
         Settings.Strength = math.clamp(Settings.Strength + input.Position.Z * 0.1, 0.0, 1.0)
@@ -229,7 +191,6 @@ StrengthBar.InputBegan:Connect(function(input)
     end
 end)
 
--- Drag
 local dragging = false
 local dragStart, startPos
 
