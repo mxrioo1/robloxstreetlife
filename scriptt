@@ -1,8 +1,8 @@
--- ratman4080 aimbot v1 | Claude Style UI
--- Camera Aimbot | FOV Circle | Color Picker | Right-Click to Aim
+-- ratman4080 Aimbot v2 | Camera Lock | Visible on Load
+-- Toggle with F8 or RightControl (If F8 is blocked)
 
 local success, err = pcall(function()
-    print("sit activated")
+    print("sit activated (aimbot)")
 
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
@@ -14,15 +14,15 @@ local success, err = pcall(function()
 
     getgenv().Settings = getgenv().Settings or { 
         Enabled = false, 
-        FOV = 120, 
-        Smoothness = 0.35,
+        FOV = 150, 
+        Smoothness = 0.25,
         Color = Color3.fromRGB(88, 166, 255),
         IsAiming = false
     }
     local Settings = getgenv().Settings
     local isDead = false
 
-    -- 监听鼠标状态
+    -- 监听右键瞄准状态 (纯变量，不卡顿)
     UserInputService.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton2 then Settings.IsAiming = true end
     end)
@@ -32,7 +32,13 @@ local success, err = pcall(function()
     end)
 
     -- UI 父级
-    local guiParent = (gethui and gethui()) or game:GetService("CoreGui")
+    local guiParent
+    local successCore, core = pcall(function() return game:GetService("CoreGui") end)
+    if successCore and core then
+        guiParent = core
+    else
+        guiParent = LocalPlayer:WaitForChild("PlayerGui")
+    end
 
     -- ============================================================
     -- 1. 屏幕中心 FOV 圈
@@ -59,7 +65,7 @@ local success, err = pcall(function()
     FOVStroke.Parent = FOVCircle
 
     -- ============================================================
-    -- 2. 核心 Aimbot 逻辑 (RenderStepped)
+    -- 2. 核心 Aimbot 逻辑 (RenderStepped 接管相机)
     -- ============================================================
     local function getClosestTarget()
         if not Camera then return nil end
@@ -92,15 +98,16 @@ local success, err = pcall(function()
         
         local targetPos = getClosestTarget()
         if targetPos and Camera then
-            -- 计算看向目标的 CFrame
+            -- 相机平滑吸附
             local aimCFrame = CFrame.lookAt(Camera.CFrame.Position, targetPos)
-            -- 使用 Smoothness 参数进行插值，越大锁得越快
-            Camera.CFrame = Camera.CFrame:Lerp(aimCFrame, Settings.Smoothness)
+            -- 用帧时间补偿平滑系数，保证不同帧率手感一致
+            local lerpFactor = math.clamp(Settings.Smoothness * (dt * 60), 0, 1)
+            Camera.CFrame = Camera.CFrame:Lerp(aimCFrame, lerpFactor)
         end
     end)
 
     -- ============================================================
-    -- 3. Claude 风格超大 UI (350x350)
+    -- 3. Claude 风格超大 UI (350x310)
     -- ============================================================
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "4080_Aimbot_UI"
@@ -112,7 +119,7 @@ local success, err = pcall(function()
     MainFrame.Position = UDim2.new(0.5, -175, 0.5, -155)
     MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 26) -- #16161A
     MainFrame.BorderSizePixel = 0
-    MainFrame.Visible = false
+    MainFrame.Visible = true -- 默认可见，防止 F8 失效
     MainFrame.Parent = ScreenGui
     
     local MainCorner = Instance.new("UICorner")
@@ -140,7 +147,7 @@ local success, err = pcall(function()
     Subtitle.Size = UDim2.new(1, -32, 0, 16)
     Subtitle.Position = UDim2.new(0, 16, 0, 44)
     Subtitle.BackgroundTransparency = 1
-    Subtitle.Text = "Hold Right Click to lock onto target"
+    Subtitle.Text = "Hold Right Click to lock. (F8 / RCtrl to hide)"
     Subtitle.TextColor3 = Color3.fromRGB(140, 140, 150)
     Subtitle.Font = Enum.Font.Gotham
     Subtitle.TextSize = 12
@@ -194,8 +201,8 @@ local success, err = pcall(function()
     FOVTrackCorner.Parent = FOVTrack
 
     local FOVFill = Instance.new("Frame")
-    FOVFill.Size = UDim2.new((Settings.FOV - 20) / 280, 0, 1, 0) -- 假设 FOV 范围 20 到 300
-    FOVFill.BackgroundColor3 = Color3.fromRGB(88, 166, 255)
+    FOVFill.Size = UDim2.new((Settings.FOV - 20) / 280, 0, 1, 0) 
+    FOVFill.BackgroundColor3 = Settings.Color
     FOVFill.BorderSizePixel = 0
     FOVFill.Parent = FOVTrack
     
@@ -228,7 +235,7 @@ local success, err = pcall(function()
 
     local SmoothFill = Instance.new("Frame")
     SmoothFill.Size = UDim2.new(Settings.Smoothness, 0, 1, 0)
-    SmoothFill.BackgroundColor3 = Color3.fromRGB(88, 166, 255)
+    SmoothFill.BackgroundColor3 = Settings.Color
     SmoothFill.BorderSizePixel = 0
     SmoothFill.Parent = SmoothTrack
     
@@ -283,8 +290,7 @@ local success, err = pcall(function()
             FOVStroke.Color = c
             FOVFill.BackgroundColor3 = c
             SmoothFill.BackgroundColor3 = c
-            ToggleBtn.TextColor3 = c
-            if not Settings.Enabled then ToggleBtn.TextColor3 = Color3.fromRGB(180, 180, 190) end
+            if Settings.Enabled then ToggleBtn.TextColor3 = c end
         end)
     end
 
@@ -308,15 +314,14 @@ local success, err = pcall(function()
     -- 4. 交互逻辑
     -- ============================================================
     
-    -- F8 开启/关闭面板
-    UserInputService.InputBegan:Connect(function(input, processed)
-        if processed or isDead then return end
-        if input.KeyCode == Enum.KeyCode.F8 then
+    -- 双键呼出（F8 和 右侧Ctrl）
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if isDead then return end
+        if input.KeyCode == Enum.KeyCode.F8 or input.KeyCode == Enum.KeyCode.RightControl then
             MainFrame.Visible = not MainFrame.Visible
         end
     end)
 
-    -- 开关控制
     ToggleBtn.MouseButton1Click:Connect(function()
         if isDead then return end
         Settings.Enabled = not Settings.Enabled
@@ -387,7 +392,7 @@ local success, err = pcall(function()
         end
     end)
 
-    -- 卸载
+    -- 销毁
     KillBtn.MouseButton1Click:Connect(function()
         isDead = true
         ScreenGui:Destroy()
