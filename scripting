@@ -1,10 +1,10 @@
--- ratman4080 silent aim v12 | XENO hardened | Claude-style UI
--- Universal hookmetamethod fallback | Right-click + Fire | Kill switch
+-- ratman4080 silent aim v13 | 100% Crash-Proof & Claude Style
+-- XENO Hardened | Right-Click Aim + Left-Click Fire
 
 print("sit activated")
 
 -- ============================================================
--- Services
+-- Services & Vars
 -- ============================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -15,41 +15,35 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse()
 
--- ============================================================
--- Settings
--- ============================================================
 local Settings = {
     Enabled = false,
     Strength = 1.0,
     FOV = 200,
-    Jitter = 0.08,
+    Jitter = 0.05
 }
 
 local targetPos = nil
-local targetPart = nil
 local isDead = false
 
 -- ============================================================
--- Team check
+-- Safe Target Acquisition
 -- ============================================================
 local function isSameTeam(player)
     if not player.Team or not LocalPlayer.Team then return false end
     return player.Team == LocalPlayer.Team
 end
 
--- ============================================================
--- Target acquisition
--- ============================================================
 local function updateTarget()
     if isDead or not Camera then return end
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local bestDist = math.huge
-    targetPos, targetPart = nil, nil
+    targetPos = nil
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer or isSameTeam(player) then continue end
         local char = player.Character
         if not char then continue end
+        
         local head = char:FindFirstChild("HitboxHead") or char:FindFirstChild("Head")
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not head or not hum or hum.Health <= 0 then continue end
@@ -59,7 +53,8 @@ local function updateTarget()
 
         local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
         if dist < bestDist and dist < Settings.FOV then
-            bestDist, targetPos, targetPart = dist, head.Position, head
+            bestDist = dist
+            targetPos = head.Position
         end
     end
 end
@@ -67,34 +62,41 @@ end
 RunService.PreRender:Connect(updateTarget)
 
 -- ============================================================
--- Trigger: Right-click aim + Left-click fire
+-- Trigger & Safe API Wrappers
 -- ============================================================
 local function isAimFire()
     return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
        and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 end
 
--- ============================================================
--- Hook installation with XENO-safe pcall wrapper
--- ============================================================
-local hookOk = false
-pcall(function()
-    local mt = getrawmetatable(game)
-    local oldNamecall = mt.__namecall
-    local oldIndex = mt.__index
-    setreadonly(mt, false)
+local function safeGetMethod()
+    if getnamecallmethod then
+        local success, m = pcall(getnamecallmethod)
+        if success then return m end
+    end
+    return ""
+end
 
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if not Settings.Enabled or not targetPos or not isAimFire() then
-            return oldNamecall(self, ...)
+local function safeIsCaller()
+    if checkcaller then
+        local success, c = pcall(checkcaller)
+        if success then return c end
+    end
+    return false
+end
+
+-- ============================================================
+-- Crash-Proof Hook Installation
+-- ============================================================
+local hookSuccess = pcall(function()
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if safeIsCaller() or not Settings.Enabled or not targetPos or not isAimFire() or not oldNamecall then
+            return oldNamecall and oldNamecall(self, ...) or nil
         end
 
-        -- safe checkcaller: if it throws, assume game call
-        local isExecutorCall = false
-        pcall(function() isExecutorCall = checkcaller() end)
-        if isExecutorCall then return oldNamecall(self, ...) end
-
+        local method = safeGetMethod()
+        
         local jitter = Vector3.new(
             (math.random() - 0.5) * Settings.Jitter,
             (math.random() - 0.5) * Settings.Jitter,
@@ -130,161 +132,157 @@ pcall(function()
         return oldNamecall(self, ...)
     end)
 
-    mt.__index = newcclosure(function(self, key)
-        if Settings.Enabled and targetPos and isAimFire() and self == Mouse then
-            local isExecutorCall = false
-            pcall(function() isExecutorCall = checkcaller() end)
-            if not isExecutorCall then
-                if key == "Hit" then
-                    local jitter = Vector3.new(
-                        (math.random() - 0.5) * Settings.Jitter,
-                        (math.random() - 0.5) * Settings.Jitter,
-                        (math.random() - 0.5) * Settings.Jitter
-                    )
-                    local aim = targetPos + jitter
-                    local look = CFrame.lookAt(Camera.CFrame.Position, aim)
-                    return CFrame.new(aim) * look.Rotation
-                elseif key == "Target" then
-                    return targetPart
-                end
+    local oldIndex
+    oldIndex = hookmetamethod(game, "__index", function(self, key)
+        if safeIsCaller() or not Settings.Enabled or not targetPos or not isAimFire() or not oldIndex then
+            return oldIndex and oldIndex(self, key) or nil
+        end
+        if self == Mouse then
+            if key == "Hit" then
+                local jitter = Vector3.new(
+                    (math.random() - 0.5) * Settings.Jitter,
+                    (math.random() - 0.5) * Settings.Jitter,
+                    (math.random() - 0.5) * Settings.Jitter
+                )
+                local aim = targetPos + jitter
+                local look = CFrame.lookAt(Camera.CFrame.Position, aim)
+                return CFrame.new(aim) * look.Rotation
+            elseif key == "Target" then
+                return Workspace:FindPartOnRay(Ray.new(Camera.CFrame.Position, (targetPos - Camera.CFrame.Position).Unit * 1000))
             end
         end
         return oldIndex(self, key)
     end)
-
-    setreadonly(mt, true)
-    hookOk = true
 end)
 
-if not hookOk then
-    warn("XENO: metatable hook failed. Silent aim inactive.")
+if not hookSuccess then
+    warn("Silent Aim: Hook failed on this executor.")
 end
 
 -- ============================================================
--- Claude-Style Big Panel
+-- UI: Claude Style Big Panel
 -- ============================================================
-local guiParent = (gethui and gethui()) or game:GetService("CoreGui")
+local guiParent
+local successCore, core = pcall(function() return game:GetService("CoreGui") end)
+if successCore and core then
+    guiParent = core
+else
+    guiParent = LocalPlayer:WaitForChild("PlayerGui")
+end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "4080_SA_Claude"
+ScreenGui.Name = "4080_Claude_SA"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = guiParent
 
--- Root card: generous padding, soft radius, layered shadow feel
-local Card = Instance.new("Frame")
-Card.Size = UDim2.new(0, 280, 0, 210)
-Card.Position = UDim2.new(0.5, -140, 0.5, -105)
-Card.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
-Card.BorderSizePixel = 0
-Card.Visible = false
-Card.Parent = ScreenGui
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 300, 0, 230)
+MainFrame.Position = UDim2.new(0.5, -150, 0.5, -115)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
 
-local CardCorner = Instance.new("UICorner")
-CardCorner.CornerRadius = UDim.new(0, 14)
-CardCorner.Parent = Card
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = MainFrame
 
-local CardStroke = Instance.new("UIStroke")
-CardStroke.Color = Color3.fromRGB(45, 45, 52)
-CardStroke.Thickness = 1
-CardStroke.Parent = Card
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(45, 45, 52)
+MainStroke.Thickness = 1
+MainStroke.Parent = MainFrame
 
--- Header area
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 44)
-Header.BackgroundTransparency = 1
-Header.Parent = Card
-
+-- Header
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -32, 0, 20)
-Title.Position = UDim2.new(0, 16, 0, 14)
+Title.Size = UDim2.new(1, -32, 0, 24)
+Title.Position = UDim2.new(0, 16, 0, 16)
 Title.BackgroundTransparency = 1
-Title.Text = "4080  ·  SILENT AIM"
-Title.TextColor3 = Color3.fromRGB(230, 230, 235)
+Title.Text = "4080 · SILENT AIM"
+Title.TextColor3 = Color3.fromRGB(235, 235, 240)
 Title.Font = Enum.Font.GothamBold
-Title.TextSize = 14
+Title.TextSize = 15
 Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Header
+Title.Parent = MainFrame
 
 local Subtitle = Instance.new("TextLabel")
-Subtitle.Size = UDim2.new(1, -32, 0, 14)
-Subtitle.Position = UDim2.new(0, 16, 0, 28)
+Subtitle.Size = UDim2.new(1, -32, 0, 16)
+Subtitle.Position = UDim2.new(0, 16, 0, 38)
 Subtitle.BackgroundTransparency = 1
-Subtitle.Text = "Street Life Remastered"
-Subtitle.TextColor3 = Color3.fromRGB(130, 130, 140)
+Subtitle.Text = "Hold Right Click + Left Click to Shoot"
+Subtitle.TextColor3 = Color3.fromRGB(140, 140, 150)
 Subtitle.Font = Enum.Font.Gotham
-Subtitle.TextSize = 10
+Subtitle.TextSize = 11
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
-Subtitle.Parent = Header
+Subtitle.Parent = MainFrame
 
 -- Divider
 local Div = Instance.new("Frame")
 Div.Size = UDim2.new(1, -32, 0, 1)
-Div.Position = UDim2.new(0, 16, 0, 48)
-Div.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+Div.Position = UDim2.new(0, 16, 0, 62)
+Div.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
 Div.BorderSizePixel = 0
-Div.Parent = Card
+Div.Parent = MainFrame
 
--- Toggle row
+-- Toggle Button
 local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Size = UDim2.new(1, -32, 0, 38)
-ToggleBtn.Position = UDim2.new(0, 16, 0, 60)
+ToggleBtn.Size = UDim2.new(1, -32, 0, 36)
+ToggleBtn.Position = UDim2.new(0, 16, 0, 76)
 ToggleBtn.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
-ToggleBtn.Text = "SILENT AIM  ·  OFF"
-ToggleBtn.TextColor3 = Color3.fromRGB(170, 170, 180)
+ToggleBtn.Text = "SILENT AIM : OFF"
+ToggleBtn.TextColor3 = Color3.fromRGB(180, 180, 190)
 ToggleBtn.Font = Enum.Font.GothamSemibold
 ToggleBtn.TextSize = 12
 ToggleBtn.BorderSizePixel = 0
-ToggleBtn.Parent = Card
+ToggleBtn.Parent = MainFrame
 
 local ToggleCorner = Instance.new("UICorner")
-ToggleCorner.CornerRadius = UDim.new(0, 9)
+ToggleCorner.CornerRadius = UDim.new(0, 8)
 ToggleCorner.Parent = ToggleBtn
 
--- Strength label
+-- Slider Section
 local StrengthLabel = Instance.new("TextLabel")
-StrengthLabel.Size = UDim2.new(0, 70, 0, 16)
-StrengthLabel.Position = UDim2.new(0, 16, 0, 110)
+StrengthLabel.Size = UDim2.new(0, 80, 0, 16)
+StrengthLabel.Position = UDim2.new(0, 16, 0, 128)
 StrengthLabel.BackgroundTransparency = 1
 StrengthLabel.Text = "STRENGTH"
 StrengthLabel.TextColor3 = Color3.fromRGB(130, 130, 140)
 StrengthLabel.Font = Enum.Font.GothamBold
-StrengthLabel.TextSize = 9
+StrengthLabel.TextSize = 10
 StrengthLabel.TextXAlignment = Enum.TextXAlignment.Left
-StrengthLabel.Parent = Card
+StrengthLabel.Parent = MainFrame
 
--- Strength track
 local Track = Instance.new("Frame")
-Track.Size = UDim2.new(0, 170, 0, 6)
-Track.Position = UDim2.new(0, 90, 0, 116)
-Track.BackgroundColor3 = Color3.fromRGB(38, 38, 44)
+Track.Size = UDim2.new(0, 170, 0, 8)
+Track.Position = UDim2.new(0, 100, 0, 132)
+Track.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
 Track.BorderSizePixel = 0
-Track.Parent = Card
+Track.Parent = MainFrame
 
 local TrackCorner = Instance.new("UICorner")
-TrackCorner.CornerRadius = UDim.new(0, 3)
+TrackCorner.CornerRadius = UDim.new(0, 4)
 TrackCorner.Parent = Track
 
 local Fill = Instance.new("Frame")
 Fill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
-Fill.BackgroundColor3 = Color3.fromRGB(88, 166, 255)  -- Claude accent blue
+Fill.BackgroundColor3 = Color3.fromRGB(88, 166, 255) -- Claude Blue
 Fill.BorderSizePixel = 0
 Fill.Parent = Track
 
 local FillCorner = Instance.new("UICorner")
-FillCorner.CornerRadius = UDim.new(0, 3)
+FillCorner.CornerRadius = UDim.new(0, 4)
 FillCorner.Parent = Fill
 
--- Kill button
+-- Kill Button
 local KillBtn = Instance.new("TextButton")
 KillBtn.Size = UDim2.new(1, -32, 0, 34)
-KillBtn.Position = UDim2.new(0, 16, 0, 148)
-KillBtn.BackgroundColor3 = Color3.fromRGB(50, 28, 28)
+KillBtn.Position = UDim2.new(0, 16, 0, 170)
+KillBtn.BackgroundColor3 = Color3.fromRGB(50, 26, 26)
 KillBtn.Text = "KILL SCRIPT"
-KillBtn.TextColor3 = Color3.fromRGB(255, 110, 110)
+KillBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
 KillBtn.Font = Enum.Font.GothamBold
 KillBtn.TextSize = 11
 KillBtn.BorderSizePixel = 0
-KillBtn.Parent = Card
+KillBtn.Parent = MainFrame
 
 local KillCorner = Instance.new("UICorner")
 KillCorner.CornerRadius = UDim.new(0, 8)
@@ -294,24 +292,30 @@ KillCorner.Parent = KillBtn
 -- Interactions
 -- ============================================================
 
--- F8 toggle
+-- F8 Toggle
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed or isDead then return end
     if input.KeyCode == Enum.KeyCode.F8 then
-        Card.Visible = not Card.Visible
+        MainFrame.Visible = not MainFrame.Visible
     end
 end)
 
--- Toggle
+-- Toggle Logic
 ToggleBtn.MouseButton1Click:Connect(function()
     if isDead then return end
     Settings.Enabled = not Settings.Enabled
-    ToggleBtn.Text = Settings.Enabled and "SILENT AIM  ·  ON" or "SILENT AIM  ·  OFF"
-    ToggleBtn.TextColor3 = Settings.Enabled and Color3.fromRGB(88, 166, 255) or Color3.fromRGB(170, 170, 180)
-    ToggleBtn.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(28, 45, 70) or Color3.fromRGB(32, 32, 38)
+    if Settings.Enabled then
+        ToggleBtn.Text = "SILENT AIM : ON"
+        ToggleBtn.TextColor3 = Color3.fromRGB(88, 166, 255)
+        ToggleBtn.BackgroundColor3 = Color3.fromRGB(28, 45, 70)
+    else
+        ToggleBtn.Text = "SILENT AIM : OFF"
+        ToggleBtn.TextColor3 = Color3.fromRGB(180, 180, 190)
+        ToggleBtn.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+    end
 end)
 
--- Slider: drag on track
+-- Drag Slider
 local draggingSlider = false
 
 Track.InputBegan:Connect(function(input)
@@ -330,45 +334,42 @@ end)
 UserInputService.InputChanged:Connect(function(input)
     if isDead or not draggingSlider then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement then
-        local pct = math.clamp(
-            (input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X,
-            0, 1
-        )
+        local pct = math.clamp((input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
         Settings.Strength = pct
         Fill.Size = UDim2.new(pct, 0, 1, 0)
     end
 end)
 
--- Window drag on header
-local draggingCard = false
+-- Window Drag
+local draggingFrame = false
 local dragStart, startPos
 
-Header.InputBegan:Connect(function(input)
+Title.InputBegan:Connect(function(input)
     if isDead then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        draggingCard = true
+        draggingFrame = true
         dragStart = input.Position
-        startPos = Card.Position
+        startPos = MainFrame.Position
         input.Changed:Connect(function()
             if input.UserInputState == Enum.UserInputState.End then
-                draggingCard = false
+                draggingFrame = false
             end
         end)
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if isDead or not draggingCard then return end
+    if isDead or not draggingFrame then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement then
         local delta = input.Position - dragStart
-        Card.Position = UDim2.new(
+        MainFrame.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y
         )
     end
 end)
 
--- Kill
+-- Kill Script
 KillBtn.MouseButton1Click:Connect(function()
     isDead = true
     ScreenGui:Destroy()
