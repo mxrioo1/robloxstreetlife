@@ -1,34 +1,19 @@
--- ratman4080 silent aim v10 | Universal Stealth Edition
--- Universal Raycast Hook | Right Click + Shoot to Trigger
--- Bigger UI | Kill Script | Working Drag Slider
+-- ratman4080 silent aim v11 | Phemonaz Open-Source Architecture
+-- Right Click + Fire | Undetected UI | Kill Switch | Working Slider
 
 print("sit activated")
 
 -- ============================================================
--- Services & Modules
+-- Services
 -- ============================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
-local ReplicatedFirst = game:GetService("ReplicatedFirst")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse()
-
-local function safeRequire(parent, name)
-    local obj = parent:FindFirstChild(name, true)
-    if obj then
-        local success, result = pcall(require, obj)
-        if success then return result end
-    end
-    return nil
-end
-
-local neuron = safeRequire(ReplicatedFirst, "neuron")
-local States = safeRequire(ReplicatedStorage, "States")
 
 -- ============================================================
 -- Settings
@@ -45,7 +30,7 @@ local targetPart = nil
 local isDead = false
 
 -- ============================================================
--- Target Acquisition
+-- Team Check & Target Acquisition
 -- ============================================================
 local function isSameTeam(player)
     if not player.Team or not LocalPlayer.Team then return false end
@@ -61,8 +46,7 @@ local function updateTarget()
     targetPart = nil
 
     for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then continue end
-        if isSameTeam(player) then continue end
+        if player == LocalPlayer or isSameTeam(player) then continue end
 
         local char = player.Character
         if not char then continue end
@@ -87,95 +71,95 @@ end
 RunService.PreRender:Connect(updateTarget)
 
 -- ============================================================
--- Universal Hooks (Raycast & Mouse)
+-- Trigger: Right Click Aiming + Left Click Shooting
 -- ============================================================
 local function isShootingAndAiming()
     return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) 
        and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 end
 
-if hookmetamethod and getnamecallmethod and checkcaller then
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if isDead or checkcaller() then return oldNamecall(self, ...) end
-        
-        local method = getnamecallmethod()
+-- ============================================================
+-- Metatable Hook (Open-Source Refactored for XENO Compatibility)
+-- ============================================================
+local mt = getrawmetatable(game)
+local oldIndex = mt.__index
+local oldNamecall = mt.__namecall
+setreadonly(mt, false)
 
-        if Settings.Enabled and targetPos and isShootingAndAiming() then
-            -- Add jitter for humanization
+mt.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    
+    if not checkcaller() and Settings.Enabled and targetPos and isShootingAndAiming() then
+        -- 微小手部随机抖动，防止弹道完全重合
+        local jitter = Vector3.new(
+            (math.random() - 0.5) * Settings.Jitter,
+            (math.random() - 0.5) * Settings.Jitter,
+            (math.random() - 0.5) * Settings.Jitter
+        )
+        local aimTarget = targetPos + jitter
+
+        if method == "Raycast" then
+            local origin, direction, params = ...
+            if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
+                local aimDir = (aimTarget - origin).Unit * direction.Magnitude
+                return oldNamecall(self, origin, direction:Lerp(aimDir, Settings.Strength), params)
+            end
+        elseif method == "FindPartOnRayWithIgnoreList" then
+            local ray, ignoreList, cubes = ...
+            if typeof(ray) == "Ray" then
+                local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
+                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreList, cubes)
+            end
+        elseif method == "FindPartOnRayWithWhitelist" then
+            local ray, whitelist = ...
+            if typeof(ray) == "Ray" then
+                local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
+                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), whitelist)
+            end
+        elseif method == "FindPartOnRay" then
+            local ray, ignoreDesc, cubes = ...
+            if typeof(ray) == "Ray" then
+                local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
+                return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreDesc, cubes)
+            end
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+
+mt.__index = newcclosure(function(self, key)
+    if not checkcaller() and Settings.Enabled and targetPos and isShootingAndAiming() and self == Mouse then
+        if key == "Hit" then
             local jitter = Vector3.new(
                 (math.random() - 0.5) * Settings.Jitter,
                 (math.random() - 0.5) * Settings.Jitter,
                 (math.random() - 0.5) * Settings.Jitter
             )
             local aimTarget = targetPos + jitter
-
-            if method == "Raycast" then
-                local origin, direction, params = ...
-                if typeof(origin) == "Vector3" and typeof(direction) == "Vector3" then
-                    local aimDir = (aimTarget - origin).Unit * direction.Magnitude
-                    return oldNamecall(self, origin, direction:Lerp(aimDir, Settings.Strength), params)
-                end
-            elseif method == "FindPartOnRayWithIgnoreList" then
-                local ray, ignoreList, cubes = ...
-                if typeof(ray) == "Ray" then
-                    local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
-                    return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreList, cubes)
-                end
-            elseif method == "FindPartOnRayWithWhitelist" then
-                local ray, whitelist = ...
-                if typeof(ray) == "Ray" then
-                    local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
-                    return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), whitelist)
-                end
-            elseif method == "FindPartOnRay" then
-                local ray, ignoreDesc, cubes = ...
-                if typeof(ray) == "Ray" then
-                    local aimDir = (aimTarget - ray.Origin).Unit * ray.Direction.Magnitude
-                    return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp(aimDir, Settings.Strength)), ignoreDesc, cubes)
-                end
-            end
+            local look = CFrame.lookAt(Camera.CFrame.Position, aimTarget)
+            return CFrame.new(aimTarget) * look.Rotation
+        elseif key == "Target" then
+            return targetPart
         end
-        return oldNamecall(self, ...)
-    end)
+    end
+    return oldIndex(self, key)
+end)
 
-    local oldIndex
-    oldIndex = hookmetamethod(game, "__index", function(self, key)
-        if isDead or checkcaller() then return oldIndex(self, key) end
-        
-        if Settings.Enabled and targetPos and isShootingAndAiming() and self == Mouse then
-            if key == "Hit" then
-                local jitter = Vector3.new(
-                    (math.random() - 0.5) * Settings.Jitter,
-                    (math.random() - 0.5) * Settings.Jitter,
-                    (math.random() - 0.5) * Settings.Jitter
-                )
-                local aimTarget = targetPos + jitter
-                local look = CFrame.lookAt(Camera.CFrame.Position, aimTarget)
-                return CFrame.new(aimTarget) * look.Rotation
-            elseif key == "Target" then
-                return targetPart
-            end
-        end
-        return oldIndex(self, key)
-    end)
-else
-    warn("XENO: hookmetamethod or checkcaller not found. Cannot apply universal hooks.")
-end
+setreadonly(mt, true)
 
 -- ============================================================
--- Bigger UI
+-- Polished UI (Bigger Panel, F8 Toggle, Kill Script)
 -- ============================================================
 local guiParent = gethui and gethui() or game:GetService("CoreGui")
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "4080_sa_universal"
+ScreenGui.Name = "4080_Universal_SA"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = guiParent
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 220, 0, 160)
-MainFrame.Position = UDim2.new(0.5, -110, 0.5, -80)
+MainFrame.Size = UDim2.new(0, 240, 0, 180)
+MainFrame.Position = UDim2.new(0.5, -120, 0.5, -90)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 MainFrame.BorderSizePixel = 0
 MainFrame.Visible = false
@@ -185,7 +169,6 @@ local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(0, 8)
 UICorner.Parent = MainFrame
 
--- Title Bar
 local TitleBar = Instance.new("Frame")
 TitleBar.Size = UDim2.new(1, 0, 0, 30)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
@@ -207,7 +190,6 @@ TitleText.TextSize = 12
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = TitleBar
 
--- Toggle Button
 local ToggleBtn = Instance.new("TextButton")
 ToggleBtn.Size = UDim2.new(1, -20, 0, 32)
 ToggleBtn.Position = UDim2.new(0, 10, 0, 40)
@@ -223,7 +205,6 @@ local BtnCorner = Instance.new("UICorner")
 BtnCorner.CornerRadius = UDim.new(0, 6)
 BtnCorner.Parent = ToggleBtn
 
--- Strength Label
 local StrengthLabel = Instance.new("TextLabel")
 StrengthLabel.Size = UDim2.new(0, 80, 0, 20)
 StrengthLabel.Position = UDim2.new(0, 10, 0, 80)
@@ -235,9 +216,8 @@ StrengthLabel.TextSize = 10
 StrengthLabel.TextXAlignment = Enum.TextXAlignment.Left
 StrengthLabel.Parent = MainFrame
 
--- Strength Bar Background
 local StrengthBar = Instance.new("Frame")
-StrengthBar.Size = UDim2.new(0, 110, 0, 8)
+StrengthBar.Size = UDim2.new(0, 120, 0, 8)
 StrengthBar.Position = UDim2.new(0, 90, 0, 86)
 StrengthBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 StrengthBar.BorderSizePixel = 0
@@ -247,7 +227,6 @@ local BarCorner = Instance.new("UICorner")
 BarCorner.CornerRadius = UDim.new(0, 4)
 BarCorner.Parent = StrengthBar
 
--- Strength Fill
 local StrengthFill = Instance.new("Frame")
 StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
 StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 220, 140)
@@ -258,10 +237,9 @@ local FillCorner = Instance.new("UICorner")
 FillCorner.CornerRadius = UDim.new(0, 4)
 FillCorner.Parent = StrengthFill
 
--- Kill Script Button
 local KillBtn = Instance.new("TextButton")
 KillBtn.Size = UDim2.new(1, -20, 0, 28)
-KillBtn.Position = UDim2.new(0, 10, 0, 120)
+KillBtn.Position = UDim2.new(0, 10, 0, 130)
 KillBtn.BackgroundColor3 = Color3.fromRGB(60, 20, 20)
 KillBtn.Text = "KILL SCRIPT"
 KillBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
@@ -277,8 +255,6 @@ KillCorner.Parent = KillBtn
 -- ============================================================
 -- Interactions
 -- ============================================================
-
--- F8 Toggle
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed or isDead then return end
     if input.KeyCode == Enum.KeyCode.F8 then
@@ -286,7 +262,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- Toggle Logic
 ToggleBtn.MouseButton1Click:Connect(function()
     if isDead then return end
     Settings.Enabled = not Settings.Enabled
@@ -295,7 +270,6 @@ ToggleBtn.MouseButton1Click:Connect(function()
     ToggleBtn.BackgroundColor3 = Settings.Enabled and Color3.fromRGB(0, 50, 25) or Color3.fromRGB(30, 30, 30)
 end)
 
--- Slider Drag
 local draggingSlider = false
 
 StrengthBar.InputBegan:Connect(function(input)
@@ -320,7 +294,6 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Window Drag
 local draggingFrame = false
 local dragStart, startPos
 
@@ -349,7 +322,6 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Kill Script
 KillBtn.MouseButton1Click:Connect(function()
     isDead = true
     ScreenGui:Destroy()
