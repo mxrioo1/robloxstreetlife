@@ -1,5 +1,5 @@
--- ratman4080 silent aim v15 | ZERO CRASH architecture
--- Removed __index hook. Removed IsMouseButtonPressed inside hook.
+-- ratman4080 silent aim v16 | Remote & Ray debugger
+-- Prints a red ESP box over the target so you know it's working.
 
 local success, err = pcall(function()
     print("sit activated")
@@ -11,6 +11,7 @@ local success, err = pcall(function()
 
     local LocalPlayer = Players.LocalPlayer
     local Camera = Workspace.CurrentCamera
+    local Mouse = LocalPlayer:GetMouse()
 
     getgenv().Settings = getgenv().Settings or { 
         Enabled = false, 
@@ -22,11 +23,11 @@ local success, err = pcall(function()
     }
     local Settings = getgenv().Settings
     local targetPos = nil
+    local targetPart = nil
     local isDead = false
 
-    -- 监听鼠标状态：纯变量，绝对不卡死
+    -- 监听鼠标状态
     UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 then Settings.IsFiring = true end
         if input.UserInputType == Enum.UserInputType.MouseButton2 then Settings.IsAiming = true end
     end)
@@ -36,19 +37,28 @@ local success, err = pcall(function()
         if input.UserInputType == Enum.UserInputType.MouseButton2 then Settings.IsAiming = false end
     end)
 
-    -- 核心目标获取
+    -- 目标获取 (带调试框)
+    local debugBox = Instance.new("BoxHandleAdornment")
+    debugBox.Size = Vector3.new(2, 2, 2)
+    debugBox.Color3 = Color3.fromRGB(255, 50, 50)
+    debugBox.Transparency = 0.5
+    debugBox.AlwaysOnTop = true
+    debugBox.Adornee = nil
+    debugBox.Parent = game:GetService("CoreGui")
+
     local function updateTarget()
         if isDead or not Camera then return end
         local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
         local bestDist = math.huge
         targetPos = nil
+        targetPart = nil
 
         for _, player in ipairs(Players:GetPlayers()) do
             if player == LocalPlayer or (player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team) then continue end
             local char = player.Character
             if not char then continue end
             
-            local head = char:FindFirstChild("HitboxHead") or char:FindFirstChild("Head")
+            local head = char:FindFirstChild("HitboxHead") or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
             local hum = char:FindFirstChildOfClass("Humanoid")
             if not head or not hum or hum.Health <= 0 then continue end
 
@@ -59,7 +69,15 @@ local success, err = pcall(function()
             if dist < bestDist and dist < Settings.FOV then
                 bestDist = dist
                 targetPos = head.Position
+                targetPart = head
             end
+        end
+
+        -- 更新调试框
+        if targetPart then
+            debugBox.Adornee = targetPart
+        else
+            debugBox.Adornee = nil
         end
     end
 
@@ -67,27 +85,27 @@ local success, err = pcall(function()
         pcall(updateTarget)
     end)
 
-    -- 底层 Hook：只拦截 __namecall，放弃 __index
+    -- 核心 Hook
     local hookSuccess = false
     
     pcall(function()
         local mt = getrawmetatable(game)
         if mt then
             local oldNamecall = mt.__namecall
+            local oldIndex = mt.__index
             setreadonly(mt, false)
             
+            -- 拦截所有可能的射线和开火事件
             mt.__namecall = newcclosure(function(self, ...)
-                -- 安全检查：不调用任何服务，只用纯变量
-                if not oldNamecall or not Settings.Enabled or not targetPos or not Settings.IsAiming or not Settings.IsFiring then
+                local method = getnamecallmethod()
+                if not method or not Settings.Enabled or not targetPos or not Settings.IsAiming or not Settings.IsFiring then
                     return oldNamecall(self, ...)
                 end
                 
-                local method = getnamecallmethod()
-                if not method then return oldNamecall(self, ...) end
-                
                 local jitter = Vector3.new((math.random()-0.5)*Settings.Jitter, (math.random()-0.5)*Settings.Jitter, (math.random()-0.5)*Settings.Jitter)
                 local aim = targetPos + jitter
-                
+
+                -- 传统射线
                 if method == "Raycast" then
                     local origin, dir, params = ...
                     if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
@@ -98,55 +116,61 @@ local success, err = pcall(function()
                     if typeof(ray) == "Ray" then
                         return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp((aim - ray.Origin).Unit * ray.Direction.Magnitude, Settings.Strength)), ignore, cubes)
                     end
-                elseif method == "FindPartOnRay" then
-                    local ray, ignoreDesc = ...
-                    if typeof(ray) == "Ray" then
-                        return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp((aim - ray.Origin).Unit * ray.Direction.Magnitude, Settings.Strength)), ignoreDesc)
+                elseif method == "ScreenPointToRay" then
+                    -- 有些游戏用摄像机发射
+                    if self == Camera then
+                        local x, y, depth = ...
+                        local newRay = Ray.new(Camera.CFrame.Position, (aim - Camera.CFrame.Position).Unit * 1000)
+                        return newRay
+                    end
+                elseif method == "FireServer" then
+                    -- 拦截 RemoteEvent：寻找参数里的位置或方向并修改
+                    local args = table.pack(...)
+                    for i = 1, args.n do
+                        local arg = args[i]
+                        if typeof(arg) == "CFrame" then
+                            args[i] = CFrame.lookAt(arg.Position, aim)
+                        elseif typeof(arg) == "Vector3" then
+                            -- 很多时候第一个向量是起点，第二个是终点/方向
+                            if i == 1 then
+                                args[i] = aim
+                            end
+                        elseif typeof(arg) == "Ray" then
+                            args[i] = Ray.new(arg.Origin, (aim - arg.Origin).Unit * arg.Direction.Magnitude)
+                        end
+                    end
+                    return oldNamecall(self, table.unpack(args, 1, args.n))
+                end
+                
+                return oldNamecall(self, ...)
+            end)
+            
+            -- 拦截 Mouse.Hit 和 Mouse.UnitRay
+            mt.__index = newcclosure(function(self, key)
+                if not oldIndex then return nil end
+                if Settings.Enabled and targetPos and Settings.IsAiming and Settings.IsFiring then
+                    if self == Mouse then
+                        if key == "Hit" then
+                            local aim = targetPos
+                            local look = CFrame.lookAt(Camera.CFrame.Position, aim)
+                            return CFrame.new(aim) * look.Rotation
+                        elseif key == "UnitRay" then
+                            return Ray.new(Camera.CFrame.Position, (targetPos - Camera.CFrame.Position).Unit * 1000)
+                        end
                     end
                 end
-                return oldNamecall(self, ...)
+                return oldIndex(self, key)
             end)
             
             setreadonly(mt, true)
             hookSuccess = true
         end
     end)
-    
-    -- 如果 getrawmetatable 失败，走 hookmetamethod 兜底
-    if not hookSuccess then
-        pcall(function()
-            local oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-                if not oldNamecall or not Settings.Enabled or not targetPos or not Settings.IsAiming or not Settings.IsFiring then
-                    return oldNamecall(self, ...)
-                end
-                
-                local method = getnamecallmethod()
-                if not method then return oldNamecall(self, ...) end
-                
-                local jitter = Vector3.new((math.random()-0.5)*Settings.Jitter, (math.random()-0.5)*Settings.Jitter, (math.random()-0.5)*Settings.Jitter)
-                local aim = targetPos + jitter
-                
-                if method == "Raycast" then
-                    local origin, dir, params = ...
-                    if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
-                        return oldNamecall(self, origin, dir:Lerp((aim - origin).Unit * dir.Magnitude, Settings.Strength), params)
-                    end
-                elseif method == "FindPartOnRayWithIgnoreList" then
-                    local ray, ignore, cubes = ...
-                    if typeof(ray) == "Ray" then
-                        return oldNamecall(self, Ray.new(ray.Origin, ray.Direction:Lerp((aim - ray.Origin).Unit * ray.Direction.Magnitude, Settings.Strength)), ignore, cubes)
-                    end
-                end
-                return oldNamecall(self, ...)
-            end)
-        end)
-    end
 
-    -- UI 构建 (Claude 极简深色风格)
+    -- 构建 UI
     local guiParent = (gethui and gethui()) or game:GetService("CoreGui")
-    
     local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "4080_SA_v15"
+    ScreenGui.Name = "4080_SA_v16"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.Parent = guiParent
     
@@ -258,7 +282,7 @@ local success, err = pcall(function()
     KillCorner.CornerRadius = UDim.new(0, 8)
     KillCorner.Parent = KillBtn
     
-    -- 交互逻辑
+    -- 交互
     UserInputService.InputBegan:Connect(function(input, processed)
         if processed or isDead then return end
         if input.KeyCode == Enum.KeyCode.F8 then
@@ -280,7 +304,6 @@ local success, err = pcall(function()
         end
     end)
     
-    -- 滑块
     local draggingSlider = false
     Track.InputBegan:Connect(function(input)
         if isDead then return end
@@ -304,7 +327,6 @@ local success, err = pcall(function()
         end
     end)
     
-    -- 拖动窗口
     local draggingFrame = false
     local dragStart, startPos
     Title.InputBegan:Connect(function(input)
@@ -334,6 +356,7 @@ local success, err = pcall(function()
     
     KillBtn.MouseButton1Click:Connect(function()
         isDead = true
+        if debugBox then debugBox:Destroy() end
         ScreenGui:Destroy()
     end)
 end)
