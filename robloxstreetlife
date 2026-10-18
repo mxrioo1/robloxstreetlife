@@ -1,0 +1,172 @@
+-- ratman4080 silent aim v1
+-- F8 toggle | minimal gui | team check | head target
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local Camera = Workspace.CurrentCamera
+
+local Settings = {
+    Enabled = false,
+    Strength = 1.0, -- 1.0 = full snap, lower = softer
+}
+
+-- gui
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "4080_gui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game:GetService("CoreGui")
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 180, 0, 80)
+Frame.Position = UDim2.new(0.5, -90, 0.5, -40)
+Frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+Frame.BorderSizePixel = 0
+Frame.Visible = false
+Frame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 6)
+UICorner.Parent = Frame
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(1, -20, 0, 30)
+ToggleBtn.Position = UDim2.new(0, 10, 0, 10)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+ToggleBtn.Text = "SILENT: OFF"
+ToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+ToggleBtn.Font = Enum.Font.Gotham
+ToggleBtn.TextSize = 13
+ToggleBtn.BorderSizePixel = 0
+ToggleBtn.Parent = Frame
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 4)
+ToggleCorner.Parent = ToggleBtn
+
+local StrengthLabel = Instance.new("TextLabel")
+StrengthLabel.Size = UDim2.new(0, 80, 0, 20)
+StrengthLabel.Position = UDim2.new(0, 10, 0, 45)
+StrengthLabel.BackgroundTransparency = 1
+StrengthLabel.Text = "STRENGTH"
+StrengthLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+StrengthLabel.Font = Enum.Font.Gotham
+StrengthLabel.TextSize = 11
+StrengthLabel.TextXAlignment = Enum.TextXAlignment.Left
+StrengthLabel.Parent = Frame
+
+local StrengthBar = Instance.new("Frame")
+StrengthBar.Size = UDim2.new(0, 80, 0, 4)
+StrengthBar.Position = UDim2.new(0, 80, 0, 53)
+StrengthBar.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+StrengthBar.BorderSizePixel = 0
+StrengthBar.Parent = Frame
+
+local StrengthFill = Instance.new("Frame")
+StrengthFill.Size = UDim2.new(1, 0, 1, 0)
+StrengthFill.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+StrengthFill.BorderSizePixel = 0
+StrengthFill.Parent = StrengthBar
+
+-- team check
+local function isSameTeam(player)
+    if not player.Team or not LocalPlayer.Team then return false end
+    return player.Team == LocalPlayer.Team
+end
+
+-- target
+local function getTarget()
+    local best, bestDist
+    local mousePos = UserInputService:GetMouseLocation()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if isSameTeam(player) then continue end
+        if not player.Character then continue end
+
+        local head = player.Character:FindFirstChild("Head")
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        if not head or not humanoid or humanoid.Health <= 0 then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+        if not bestDist or dist < bestDist then
+            bestDist = dist
+            best = head
+        end
+    end
+
+    return best
+end
+
+-- hook
+local mt = getrawmetatable(game)
+local oldIndex = mt.__index
+setreadonly(mt, false)
+
+mt.__index = newcclosure(function(self, key)
+    if Settings.Enabled and self == Mouse and (key == "Hit" or key == "Target") then
+        local target = getTarget()
+        if target then
+            if key == "Hit" then
+                local look = CFrame.lookAt(Camera.CFrame.Position, target.Position)
+                return CFrame.new(target.Position) * (look - look.Position)
+            else
+                return target
+            end
+        end
+    end
+    return oldIndex(self, key)
+end)
+
+setreadonly(mt, true)
+
+-- input
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.F8 then
+        Frame.Visible = not Frame.Visible
+    end
+end)
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    Settings.Enabled = not Settings.Enabled
+    ToggleBtn.Text = Settings.Enabled and "SILENT: ON" or "SILENT: OFF"
+    ToggleBtn.TextColor3 = Settings.Enabled and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(200, 200, 200)
+end)
+
+-- strength via scroll on bar
+StrengthBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseWheel then
+        Settings.Strength = math.clamp(Settings.Strength + input.Position.Z * 0.1, 0.1, 1.0)
+        StrengthFill.Size = UDim2.new(Settings.Strength, 0, 1, 0)
+    end
+end)
+
+-- make frame draggable
+local dragging, dragStart, startPos
+Frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = Frame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        Frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
